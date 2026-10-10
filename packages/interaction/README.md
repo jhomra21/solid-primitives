@@ -76,13 +76,16 @@ Reactive wrapper around `makeInteractOutside`. Sets up document-level event list
 
 ### Options
 
-| Option                 | Type                                       | Description                                                                                                                                      |
-| ---------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `disabled`             | `MaybeAccessor<boolean \| undefined>`      | Disables all listeners when `true`. Reactive — can be an accessor.                                                                               |
-| `shouldExcludeElement` | `(element: Element) => boolean`            | Return `true` to suppress handlers for a specific element.                                                                                       |
-| `onPointerDownOutside` | `(event: PointerDownOutsideEvent) => void` | Fired when a `pointerdown` event occurs outside `ref`. Call `event.preventDefault()` to stop `onInteractOutside` from firing.                    |
-| `onFocusOutside`       | `(event: FocusOutsideEvent) => void`       | Fired when focus moves outside `ref`. Call `event.preventDefault()` to stop `onInteractOutside` from firing.                                     |
-| `onInteractOutside`    | `(event: InteractOutsideEvent) => void`    | Fired for any outside interaction — both pointer and focus. Always fires after the specific handler unless that handler called `preventDefault`. |
+| Option                 | Type                                       | Description                                                                                                                                                  |
+| ---------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `disabled`             | `MaybeAccessor<boolean \| undefined>`      | Disables all listeners when `true`. Reactive — can be an accessor.                                                                                           |
+| `shouldExcludeElement` | `(element: Element) => boolean`            | Return `true` to suppress handlers for a specific element.                                                                                                   |
+| `onPointerDownOutside` | `(event: PointerDownOutsideEvent) => void` | Fired when a `pointerdown` event occurs outside `ref`. Call `event.preventDefault()` to stop `onInteractOutside` from firing.                                |
+| `onFocusOutside`       | `(event: FocusOutsideEvent) => void`       | Fired when focus moves outside `ref`. Call `event.preventDefault()` to stop `onInteractOutside` from firing.                                                 |
+| `onInteractOutside`    | `(event: InteractOutsideEvent) => void`    | Fired for any outside interaction — both pointer and focus. Always fires after the specific handler unless that handler called `preventDefault`.             |
+| `captureTouchOutside`  | `() => (() => boolean) \| undefined`       | Optionally capture touch eligibility at pointerdown and return a guard checked again before dispatch. Return `undefined` to allow the touch without a guard. |
+
+Completed touch interactions are dispatched only if the returned eligibility guard still passes. The guard controls whether the outside event is dispatched; returning a value from an outside-event handler does not reject a touch. A compatibility click that the browser sends for the touch cancels the touch if it is prevented, so the outside event is not dispatched. This is useful for layered UI that needs to ignore a touch after the layer stack changes between pointerdown and completion.
 
 ### Event types
 
