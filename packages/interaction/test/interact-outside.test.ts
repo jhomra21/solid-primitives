@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, onTestFinished } from "vitest";
 import { createRoot, createSignal, flush } from "solid-js";
 import { createInteractOutside, type CreateInteractOutsideProps } from "../src/index.js";
 
@@ -263,8 +263,9 @@ describe("createInteractOutside", () => {
       cleanup();
     });
 
-    it("does not treat a prevented compatibility click as a canceled touch", () => {
+    it("cancels a completed touch when its matching compatibility click is prevented", () => {
       const { mocks, outside, cleanup } = setupTest("div", "div");
+      onTestFinished(cleanup);
       Object.defineProperty(document, "elementFromPoint", {
         configurable: true,
         value: () => outside,
@@ -302,8 +303,121 @@ describe("createInteractOutside", () => {
       expect(click.defaultPrevented).toBe(true);
       vi.advanceTimersByTime(1);
 
+      expect(mocks.onPointerDownOutside).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(400);
+      expect(mocks.onPointerDownOutside).not.toHaveBeenCalled();
+    });
+
+    it("cancels a completed touch when a native control's matching click is prevented after dispatch", () => {
+      const { mocks, outside, cleanup } = setupTest("div", "div");
+      onTestFinished(cleanup);
+      const button = document.createElement("button");
+      outside.append(button);
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => button,
+      });
+      const init = {
+        bubbles: true,
+        pointerType: "touch",
+        pointerId: 28,
+        isPrimary: true,
+        clientX: 12,
+        clientY: 18,
+      };
+      button.dispatchEvent(new PointerEvent("pointerdown", init));
+      document.dispatchEvent(new PointerEvent("pointerup", init));
+      vi.advanceTimersByTime(1); // completion runs and schedules the no-click fallback
+      button.addEventListener("click", event => event.preventDefault());
+      button.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          detail: 1,
+          clientX: 12,
+          clientY: 18,
+        }),
+      );
+      vi.advanceTimersByTime(401);
+
+      expect(mocks.onPointerDownOutside).not.toHaveBeenCalled();
+    });
+
+    it("cancels a completed touch when a custom control's matching click is prevented after dispatch", () => {
+      const { mocks, outside, cleanup } = setupTest("div", "div");
+      onTestFinished(cleanup);
+      const control = document.createElement("div");
+      control.setAttribute("role", "button");
+      const first = document.createElement("span");
+      const second = document.createElement("span");
+      control.append(first, second);
+      outside.append(control);
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => second,
+      });
+      const init = {
+        bubbles: true,
+        pointerType: "touch",
+        pointerId: 29,
+        isPrimary: true,
+        clientX: 12,
+        clientY: 18,
+      };
+      first.dispatchEvent(new PointerEvent("pointerdown", init));
+      document.dispatchEvent(new PointerEvent("pointerup", init));
+      vi.advanceTimersByTime(1);
+      control.addEventListener("click", event => event.preventDefault());
+      control.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          detail: 1,
+          clientX: 12,
+          clientY: 18,
+        }),
+      );
+      vi.advanceTimersByTime(401);
+
+      expect(mocks.onPointerDownOutside).not.toHaveBeenCalled();
+    });
+
+    it("does not let an unrelated prevented click cancel a completed touch", () => {
+      const { mocks, outside, cleanup } = setupTest("div", "div");
+      onTestFinished(cleanup);
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => outside,
+      });
+      const init = {
+        bubbles: true,
+        pointerType: "touch",
+        pointerId: 30,
+        isPrimary: true,
+        clientX: 12,
+        clientY: 18,
+      };
+      outside.dispatchEvent(new PointerEvent("pointerdown", init));
+      document.dispatchEvent(new PointerEvent("pointerup", init));
+      const unrelated = document.createElement("button");
+      document.body.append(unrelated);
+      onTestFinished(() => unrelated.remove());
+      unrelated.addEventListener("click", event => event.preventDefault());
+      unrelated.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          detail: 1,
+          clientX: 12,
+          clientY: 18,
+        }),
+      );
+      vi.advanceTimersByTime(1);
+      expect(mocks.onPointerDownOutside).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(400);
       expect(mocks.onPointerDownOutside).toHaveBeenCalledTimes(1);
-      cleanup();
+      vi.advanceTimersByTime(400); // flush the late-click guard timer so it cannot leak into later tests
     });
 
     it("uses a matching compatibility click without waiting for the fallback", () => {

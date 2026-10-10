@@ -69,7 +69,7 @@ export function makeTouchOutside(
       if (pending !== gesture || !gesture.up || (gesture.touchStart && !gesture.touchEnd))
         return false;
       if (
-        [down, gesture.up, gesture.touchStart, gesture.touchEnd].some(
+        [down, gesture.up, gesture.touchStart, gesture.touchEnd, gesture.click].some(
           event => event?.defaultPrevented,
         )
       ) {

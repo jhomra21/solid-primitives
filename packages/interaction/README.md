@@ -85,7 +85,7 @@ Reactive wrapper around `makeInteractOutside`. Sets up document-level event list
 | `onInteractOutside`    | `(event: InteractOutsideEvent) => void`    | Fired for any outside interaction — both pointer and focus. Always fires after the specific handler unless that handler called `preventDefault`.             |
 | `captureTouchOutside`  | `() => (() => boolean) \| undefined`       | Optionally capture touch eligibility at pointerdown and return a guard checked again before dispatch. Return `undefined` to allow the touch without a guard. |
 
-Completed touch interactions are dispatched only if the returned eligibility guard still passes. The guard controls whether the outside event is dispatched; returning a value from an outside-event handler does not reject a touch. This is useful for layered UI that needs to ignore a touch after the layer stack changes between pointerdown and completion.
+Completed touch interactions are dispatched only if the returned eligibility guard still passes. The guard controls whether the outside event is dispatched; returning a value from an outside-event handler does not reject a touch. A compatibility click that the browser sends for the touch cancels the touch if it is prevented, so the outside event is not dispatched. This is useful for layered UI that needs to ignore a touch after the layer stack changes between pointerdown and completion.
 
 ### Event types
 
