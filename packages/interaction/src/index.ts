@@ -28,6 +28,7 @@ import {
   isServer,
   noop,
 } from "@solid-primitives/utils";
+import { makeTouchOutside } from "./touch-outside.js";
 
 // ---- ariaHideOutside / createHideOutside ----
 
@@ -426,6 +427,12 @@ export interface CreateInteractOutsideOptions {
    * Can be prevented.
    */
   onInteractOutside?: (event: InteractOutsideEvent) => void;
+  /**
+   * Capture touch eligibility at pointerdown and return a guard that is checked
+   * again before the completed-touch outside event is dispatched. This lets
+   * layer-based consumers reject gestures made stale by intervening layer changes.
+   */
+  captureTouchOutside?: () => (() => boolean) | undefined;
 }
 
 /** {@link CreateInteractOutsideOptions} without `disabled` — for use with {@link makeInteractOutside} and {@link interactOutside}. */
@@ -475,13 +482,12 @@ export function makeInteractOutside<T extends Element>(
 ): () => void {
   if (isServer) return noop;
 
-  let clickHandler: () => void = noop;
-
   // el.ownerDocument may be an about:blank document at ref-apply time if the element was
   // created by a renderer whose `document` global resolved before the real document was ready
   // (e.g. Vite pre-bundled deps in Storybook iframes). Reading el.ownerDocument inside the
   // setTimeout ensures we get the document after the element has been adopted into the real DOM.
   let ownerDoc: Document = el.ownerDocument;
+  let touch: ReturnType<typeof makeTouchOutside> | undefined;
 
   /**
    * The element to report an outside interaction on, or `null` when the interaction is not outside
@@ -521,30 +527,29 @@ export function makeInteractOutside<T extends Element>(
 
     const handler = () => {
       const target = getOutsideTarget(origin);
-      if (!target) return;
+      if (!target) return false;
 
       target.addEventListener(
         POINTER_DOWN_OUTSIDE_EVENT,
         composeHandlers([options.onPointerDownOutside, options.onInteractOutside]),
         { once: true },
       );
-      target.dispatchEvent(
-        new CustomEvent(POINTER_DOWN_OUTSIDE_EVENT, {
-          bubbles: false,
-          cancelable: true,
-          detail: {
-            originalEvent: e,
-            isContextMenu: e.button === 2 || (isCtrlKey(e) && e.button === 0),
-          } as EventDetails<PointerEvent>,
-        }),
-      );
+      const outsideEvent = new CustomEvent(POINTER_DOWN_OUTSIDE_EVENT, {
+        bubbles: false,
+        cancelable: true,
+        detail: {
+          originalEvent: e,
+          isContextMenu: e.button === 2 || (isCtrlKey(e) && e.button === 0),
+        } as EventDetails<PointerEvent>,
+      });
+      target.dispatchEvent(outsideEvent);
+      return !outsideEvent.defaultPrevented;
     };
 
     if (e.pointerType === "touch") {
-      ownerDoc.removeEventListener("click", clickHandler);
-      clickHandler = handler;
-      ownerDoc.addEventListener("click", clickHandler, { once: true });
+      touch?.start(e, origin, handler);
     } else {
+      touch?.clear();
       handler();
     }
   };
@@ -576,13 +581,18 @@ export function makeInteractOutside<T extends Element>(
   //    (it may have been created in an about:blank context by a pre-bundled renderer).
   const pointerDownTimeoutId = window.setTimeout(() => {
     ownerDoc = el.ownerDocument;
+    touch = makeTouchOutside(
+      ownerDoc,
+      origin => !!getOutsideTarget(origin),
+      options.captureTouchOutside,
+    );
     ownerDoc.addEventListener("pointerdown", onPointerDown, true);
     ownerDoc.addEventListener("focusin", onFocusIn, true);
   }, 0);
 
   return () => {
     window.clearTimeout(pointerDownTimeoutId);
-    ownerDoc.removeEventListener("click", clickHandler);
+    touch?.clear();
     ownerDoc.removeEventListener("pointerdown", onPointerDown, true);
     ownerDoc.removeEventListener("focusin", onFocusIn, true);
   };
@@ -614,6 +624,7 @@ export function interactOutside(options: MakeInteractOutsideOptions): (el: Eleme
   let cleanup: (() => void) | undefined;
   onCleanup(() => cleanup?.());
   return el => {
+    cleanup?.();
     cleanup = makeInteractOutside(el, options);
   };
 }
