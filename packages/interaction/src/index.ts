@@ -21,7 +21,14 @@
  */
 
 import { type Accessor, createEffect, onCleanup } from "solid-js";
-import { type MaybeAccessor, access, globalRegistry, isServer, noop } from "@solid-primitives/utils";
+import {
+  type MaybeAccessor,
+  access,
+  globalRegistry,
+  isServer,
+  noop,
+} from "@solid-primitives/utils";
+import { makeTouchOutside } from "./touch-outside.js";
 
 // ---- ariaHideOutside / createHideOutside ----
 
@@ -88,7 +95,11 @@ function refCountedApply(
 }
 
 /** Reverts `unapply` once the last ref-counted hold on `node` in `map` is released. */
-function refCountedRelease(map: WeakMap<Element, number>, node: Element, unapply: () => void): void {
+function refCountedRelease(
+  map: WeakMap<Element, number>,
+  node: Element,
+  unapply: () => void,
+): void {
   const count = map.get(node);
   if (count == null) return;
   if (count === 1) {
@@ -196,10 +207,10 @@ export function ariaHideOutside(
 
   walk(root);
 
-  const observer = new MutationObserver((changes) => {
+  const observer = new MutationObserver(changes => {
     for (const change of changes) {
       if (change.type !== "childList" || change.addedNodes.length === 0) continue;
-      if (![...visibleNodes, ...hiddenNodes].some((node) => node.contains(change.target))) {
+      if (![...visibleNodes, ...hiddenNodes].some(node => node.contains(change.target))) {
         Array.from(change.removedNodes).forEach(node => {
           if (node instanceof Element) {
             visibleNodes.delete(node);
@@ -216,14 +227,20 @@ export function ariaHideOutside(
   observer.observe(root, { childList: true, subtree: true });
 
   const wrapper = {
-    observe() { observer.observe(root, { childList: true, subtree: true }); },
-    disconnect() { observer.disconnect(); },
+    observe() {
+      observer.observe(root, { childList: true, subtree: true });
+    },
+    disconnect() {
+      observer.disconnect();
+    },
   };
   observerStack.push(wrapper);
 
   return () => {
     observer.disconnect();
-    hiddenNodes.forEach(node => refCountedRelease(refCountMap, node, () => node.removeAttribute("aria-hidden")));
+    hiddenNodes.forEach(node =>
+      refCountedRelease(refCountMap, node, () => node.removeAttribute("aria-hidden")),
+    );
     inertedNodes.forEach(node =>
       refCountedRelease(inertRefCountMap, node, () => {
         (node as HTMLElement).inert = false;
@@ -331,6 +348,12 @@ export interface CreateInteractOutsideOptions {
    * Can be prevented.
    */
   onInteractOutside?: (event: InteractOutsideEvent) => void;
+  /**
+   * Capture touch eligibility at pointerdown and return a guard that is checked
+   * again before the completed-touch outside event is dispatched. This lets
+   * layer-based consumers reject gestures made stale by intervening layer changes.
+   */
+  captureTouchOutside?: () => (() => boolean) | undefined;
 }
 
 /** {@link CreateInteractOutsideOptions} without `disabled` — for use with {@link makeInteractOutside} and {@link interactOutside}. */
@@ -380,15 +403,14 @@ export function makeInteractOutside<T extends Element>(
 ): () => void {
   if (isServer) return noop;
 
-  let clickHandler: () => void = noop;
-
   // el.ownerDocument may be an about:blank document at ref-apply time if the element was
   // created by a renderer whose `document` global resolved before the real document was ready
   // (e.g. Vite pre-bundled deps in Storybook iframes). Reading el.ownerDocument inside the
   // setTimeout ensures we get the document after the element has been adopted into the real DOM.
   let ownerDoc: Document = el.ownerDocument;
+  let touch: ReturnType<typeof makeTouchOutside> | undefined;
 
-  const isEventOutside = (e: Event): boolean => {
+  const isEventOutside = (e: Event | { target: EventTarget | null }): boolean => {
     // `el` can be removed from the document by its owner (e.g. a `<Show>`
     // unmounting a dismissable layer) before this instance's reactive owner
     // gets around to calling the cleanup this function returns (listener
@@ -400,7 +422,8 @@ export function makeInteractOutside<T extends Element>(
     // as outside interactions on this now-orphaned instance.
     if (!el.isConnected) return false;
     const target = e.target as Element | null;
-    if (!(target instanceof Element)) return false;
+    const ElementConstructor = ownerDoc.defaultView?.Element;
+    if (!ElementConstructor || !(target instanceof ElementConstructor)) return false;
     if (!ownerDoc.contains(target)) return false;
     if (el.contains(target)) return false;
     return !(options.shouldExcludeElement?.(target) ?? false);
@@ -409,30 +432,29 @@ export function makeInteractOutside<T extends Element>(
   const onPointerDown = (e: PointerEvent) => {
     const handler = () => {
       const target = e.target as Element | null;
-      if (!target || !isEventOutside(e)) return;
+      if (!target || !isEventOutside(e)) return false;
 
       target.addEventListener(
         POINTER_DOWN_OUTSIDE_EVENT,
         composeHandlers([options.onPointerDownOutside, options.onInteractOutside]),
         { once: true },
       );
-      target.dispatchEvent(
-        new CustomEvent(POINTER_DOWN_OUTSIDE_EVENT, {
-          bubbles: false,
-          cancelable: true,
-          detail: {
-            originalEvent: e,
-            isContextMenu: e.button === 2 || (isCtrlKey(e) && e.button === 0),
-          } as EventDetails<PointerEvent>,
-        }),
-      );
+      const outsideEvent = new CustomEvent(POINTER_DOWN_OUTSIDE_EVENT, {
+        bubbles: false,
+        cancelable: true,
+        detail: {
+          originalEvent: e,
+          isContextMenu: e.button === 2 || (isCtrlKey(e) && e.button === 0),
+        } as EventDetails<PointerEvent>,
+      });
+      target.dispatchEvent(outsideEvent);
+      return !outsideEvent.defaultPrevented;
     };
 
     if (e.pointerType === "touch") {
-      ownerDoc.removeEventListener("click", clickHandler);
-      clickHandler = handler;
-      ownerDoc.addEventListener("click", clickHandler, { once: true });
+      touch?.start(e, handler);
     } else {
+      touch?.clear();
       handler();
     }
   };
@@ -464,13 +486,14 @@ export function makeInteractOutside<T extends Element>(
   //    (it may have been created in an about:blank context by a pre-bundled renderer).
   const pointerDownTimeoutId = window.setTimeout(() => {
     ownerDoc = el.ownerDocument;
+    touch = makeTouchOutside(ownerDoc, isEventOutside, options.captureTouchOutside);
     ownerDoc.addEventListener("pointerdown", onPointerDown, true);
     ownerDoc.addEventListener("focusin", onFocusIn, true);
   }, 0);
 
   return () => {
     window.clearTimeout(pointerDownTimeoutId);
-    ownerDoc.removeEventListener("click", clickHandler);
+    touch?.clear();
     ownerDoc.removeEventListener("pointerdown", onPointerDown, true);
     ownerDoc.removeEventListener("focusin", onFocusIn, true);
   };
@@ -502,6 +525,7 @@ export function interactOutside(options: MakeInteractOutsideOptions): (el: Eleme
   let cleanup: (() => void) | undefined;
   onCleanup(() => cleanup?.());
   return el => {
+    cleanup?.();
     cleanup = makeInteractOutside(el, options);
   };
 }
