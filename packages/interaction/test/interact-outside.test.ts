@@ -1131,13 +1131,31 @@ describe("createInteractOutside", () => {
       cleanup();
     });
 
-    // Touch defers the outside check to the following `click`, after the pointerdown has finished
-    // dispatching — when `composedPath()` is already empty and only the retargeted host remains.
+    // A completed touch is judged after pointerup, when `composedPath()` is empty and only
+    // `elementFromPoint` (which stops at a shadow host) is left to locate the finger.
     const touchDown = (target: Element) => {
-      target.dispatchEvent(
-        new PointerEvent("pointerdown", { bubbles: true, composed: true, pointerType: "touch" }),
-      );
-      target.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      const root = target.getRootNode() as ShadowRoot | Document;
+      const host = root instanceof ShadowRoot ? root.host : null;
+      if (host) {
+        Object.defineProperty(root, "elementFromPoint", {
+          configurable: true,
+          value: () => target,
+        });
+      }
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => host ?? target,
+      });
+      const init = {
+        bubbles: true,
+        composed: true,
+        pointerType: "touch",
+        pointerId: 3,
+        isPrimary: true,
+      };
+      target.dispatchEvent(new PointerEvent("pointerdown", init));
+      document.dispatchEvent(new PointerEvent("pointerup", init));
+      vi.advanceTimersByTime(401);
     };
 
     it("does not trigger on a touch inside the watched element's own shadow content", () => {
@@ -1165,8 +1183,9 @@ describe("createInteractOutside", () => {
 
       touchDown(outside);
 
-      expect(seen).toHaveLength(1);
-      expect(seen[0]).toBe(outside);
+      // A completed touch re-checks eligibility several times; none may see the shadow host.
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every(el => el === outside)).toBe(true);
       expect(dispatchedOn).toHaveLength(1);
       expect(dispatchedOn[0]).toBe(outside);
       expect(mocks.onInteractOutside).toHaveBeenCalledTimes(1);

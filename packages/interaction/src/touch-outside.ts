@@ -6,6 +6,7 @@ type TouchGesture = {
   started: number;
   up?: PointerEvent;
   upTarget?: Element | null;
+  upHit?: Element | null;
   touchStart?: TouchEvent;
   touchEnd?: TouchEvent;
   touchId?: number;
@@ -22,11 +23,10 @@ export function makeTouchOutside(
   ownerDoc: Document,
   isOutside: (origin: TouchOrigin | null) => boolean,
   captureOutside?: () => (() => boolean) | undefined,
-): { start: (
-    down: PointerEvent,
-    origin: TouchOrigin | null,
-    dispatch: () => boolean | void,
-  ) => void; clear: () => void } {
+): {
+  start: (down: PointerEvent, origin: TouchOrigin | null, dispatch: () => boolean | void) => void;
+  clear: () => void;
+} {
   let pending: TouchGesture | undefined;
 
   const clear = () => {
@@ -37,6 +37,20 @@ export function makeTouchOutside(
     for (const timer of pending.timers) clearTimeout(timer);
     pending = undefined;
   };
+
+  // `elementFromPoint` stops at a shadow host; descend so a point inside a shadow tree resolves to the
+  // element under it.
+  const hitAt = (x: number, y: number) => {
+    let hit = ownerDoc.elementFromPoint?.(x, y) ?? null;
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint?.(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  };
+  const originOf = (hit: Element | null | undefined): TouchOrigin | null =>
+    hit ? { target: hit, path: [] } : null;
 
   // Nearest ancestor of `a` that also contains `b`; document-level ancestors are not a control.
   const sharedElement = (a: Element, b: Element) => {
@@ -87,14 +101,13 @@ export function makeTouchOutside(
         clear();
         return false;
       }
-      const hit = ownerDoc.elementFromPoint?.(gesture.up.clientX, gesture.up.clientY);
+      const hit = hitAt(gesture.up.clientX, gesture.up.clientY);
       if (
         !isStillEligible() ||
         !isOutside(downOrigin) ||
         !gesture.upTarget ||
-        !isOutside({ target: gesture.upTarget, path: [] }) ||
-        !hit ||
-        !isOutside({ target: hit, path: [] })
+        !isOutside(originOf(gesture.upHit)) ||
+        !isOutside(originOf(hit))
       ) {
         clear();
         return false;
@@ -191,6 +204,7 @@ export function makeTouchOutside(
       }
       gesture.up = up;
       gesture.upTarget = ownerDoc.elementFromPoint?.(up.clientX, up.clientY);
+      gesture.upHit = hitAt(up.clientX, up.clientY);
       if (!gesture.touchStart) complete();
     });
     listen("touchend", event => {
@@ -209,6 +223,11 @@ export function makeTouchOutside(
       const click = event as MouseEvent;
       if (!click.detail || moved(click) || !gesture.up) return;
       const target = click.target;
+      const path = click.composedPath();
+      const clickOrigin =
+        path[0] instanceof Node && path[0].nodeType === Node.ELEMENT_NODE
+          ? { target: path[0] as Element, path }
+          : null;
       const ElementConstructor = ownerDoc.defaultView?.Element;
       const original =
         ElementConstructor && down.target instanceof ElementConstructor
@@ -224,7 +243,7 @@ export function makeTouchOutside(
         ((original && original.contains(target)) || (shared && shared.contains(target)));
       if (
         !matchesOriginalControl ||
-        !isOutside({ target, path: [] }) ||
+        !isOutside(clickOrigin) ||
         !gesture.upTarget ||
         (!target.contains(gesture.upTarget) && !gesture.upTarget.contains(target))
       ) {
